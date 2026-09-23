@@ -10,6 +10,7 @@ import pytest
 
 from services.longform_render import (
     LOUDNESS_PRESETS,
+    LOUDNORM_OUTPUT_RATE,
     MeasuredLoudness,
     build_concat_list,
     build_ffmetadata,
@@ -183,6 +184,23 @@ def test_render_cmd_loudnorm_adds_af():
     cmd = build_render_cmd("ffmpeg", "c", "m", "o", loudness="acx")
     assert "-af" in cmd
     assert any(a.startswith("loudnorm=") for a in cmd)
+
+
+@pytest.mark.parametrize("fmt", ["m4b", "mp3"])
+@pytest.mark.parametrize("measured", [False, True])
+def test_render_cmd_loudnorm_pins_output_rate(fmt, measured):
+    # loudnorm emits 192 kHz; without -ar the m4b came out at 96 kHz.
+    m = MeasuredLoudness(input_i=-20.0, input_tp=-3.0, input_lra=5.0,
+                         input_thresh=-30.0, target_offset=0.1) if measured else None
+    cmd = build_render_cmd("ffmpeg", "c", "m", f"o.{fmt}", fmt=fmt,
+                           loudness="podcast", measured=m)
+    i = cmd.index("-ar")
+    assert cmd[i + 1] == str(LOUDNORM_OUTPUT_RATE) == "48000"
+    assert i > cmd.index("-af")
+
+
+def test_render_cmd_without_loudnorm_keeps_source_rate():
+    assert "-ar" not in build_render_cmd("ffmpeg", "c", "m", "o.m4b")
 
 
 def test_render_cmd_with_cover(tmp_path):
