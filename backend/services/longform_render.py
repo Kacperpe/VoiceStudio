@@ -47,6 +47,12 @@ _BITRATE_RE = re.compile(r"^\d{2,3}k$")
 #: wrote or reused (see ``prune_cache_dir``). Override via
 #: OMNIVOICE_LONGFORM_CACHE_MAX_GB.
 _CACHE_MAX_BYTES = int(float(os.environ.get("OMNIVOICE_LONGFORM_CACHE_MAX_GB", "2")) * 1024 ** 3)
+#: Output sample rate whenever loudnorm runs. loudnorm resamples to 192 kHz
+#: internally and emits that rate; without an explicit ``-ar`` the AAC encoder
+#: kept the highest rate it supports (96 kHz), which spends the bitrate on
+#: inaudible bands and plays badly on phone audiobook apps. 48 kHz is the
+#: rate every AAC/MP3 decoder handles.
+LOUDNORM_OUTPUT_RATE = 48000
 _COVER_EXTS = {".jpg", ".jpeg", ".png"}
 _COVER_MAX_BYTES = 8 * 1024 * 1024  # 8 MB — a book cover, not a payload
 
@@ -763,7 +769,7 @@ def build_render_cmd(
     # gives an off-render no -af (byte-identical to today).
     filt = build_loudnorm_apply_filter(loudness, measured) if measured is not None else build_loudnorm_filter(loudness)
     if filt:
-        cmd += ["-af", filt]
+        cmd += ["-af", filt, "-ar", str(LOUDNORM_OUTPUT_RATE)]
 
     if is_mp3:
         cmd += ["-c:a", "libmp3lame", "-b:a", bitrate, "-f", "mp3", str(out_path)]

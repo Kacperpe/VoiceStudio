@@ -40,6 +40,7 @@ metadata and the backend fallback mirror it. Archived Tauri manifests stay froze
 - Integration and featured logos open their page in VoiceStudio; the vendor website opens only from the page's Website card (#2304)
 - Pickers show readable labels instead of raw values such as `__default__`, `auto` or language codes before they are opened (#2304)
 - Resuming an audiobook larger than the render cache no longer re-renders its first chapters; the cache is trimmed after a job and never drops chapters a job is using (#2318)
+- Audiobooks with loudness normalization come out at 48 kHz instead of 96 kHz, so they sound right in phone audiobook apps (#2)
 
 ### Fixed
 
