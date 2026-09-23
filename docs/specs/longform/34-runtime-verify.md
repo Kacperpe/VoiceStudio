@@ -234,7 +234,7 @@ untested state; the test plan is required to cover the **Verify** column for eac
 | Change voice / order / pause / speed / sample_rate / engine | each is in the key payload (`:126-131`) | re-render | B7b |
 | Add/change lexicon (`/audiobook`) | folded under `"\x00lexicon"` sig key (`audiobook.py:284-287`) | re-render of affected chapters | B8 |
 | Underlying voice profile edited (ref_audio/instruct/seed change) | `voice_sig` changes (`audiobook.py:282-283`) | re-render | B7c |
-| Cache over `_CACHE_MAX_BYTES` (default 2 GB, `OMNIVOICE_LONGFORM_CACHE_MAX_GB`) | `prune_cache_dir` called **before** write (`audiobook.py:401`) | oldest WAVs evicted by mtime; **current job's fresh chapters never targeted** (pruned before they're written) | B-evict |
+| Cache over `_CACHE_MAX_BYTES` (default 2 GB, `OMNIVOICE_LONGFORM_CACHE_MAX_GB`) | `prune_cache_dir(keep_since=…)` called **after** the job, in the render's `finally` | oldest WAVs evicted by mtime; files written or reused (hits bump mtime) since the oldest live render began are never evicted, so a resumed book bigger than the cap keeps its chapters | B-evict |
 | Eviction race on a tie mtime | `entries.sort()` on `(mtime,size,p)` (`longform_render.py:93`) | deterministic enough; keep cache cases small to avoid mtime ties (see Risk) | B-evict |
 | `prune_cache_dir` on missing dir / unstattable file | `try/except OSError` (`longform_render.py:74-77`, `:87-88`, `:102-103`) | returns `(0,0)` / skips file, never raises | B-evict |
 
