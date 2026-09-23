@@ -39,7 +39,7 @@ metadata and the backend fallback mirror it. Archived Tauri manifests stay froze
 - Integration pages show each integration's own category and summary instead of borrowed labels such as "Dubbing" for Twilio (#2304)
 - Integration and featured logos open their page in VoiceStudio; the vendor website opens only from the page's Website card (#2304)
 - Pickers show readable labels instead of raw values such as `__default__`, `auto` or language codes before they are opened (#2304)
-- Resuming an audiobook larger than the render cache no longer re-renders its first chapters; the cache is trimmed after a job and never drops chapters a job is using
+- Resuming an audiobook larger than the render cache no longer re-renders its first chapters; the cache is trimmed after a job and never drops chapters a job is using (#2318)
 
 ### Fixed
 
