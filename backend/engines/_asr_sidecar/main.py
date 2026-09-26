@@ -111,6 +111,14 @@ def _get_model():
             # (#1529). CPU always works; say why in the sidecar log.
             print("asr-sidecar: device probe failed — using cpu", file=sys.stderr, flush=True)
             device = "cpu"
+        if device == "cuda":
+            # Without loadable cuDNN 8, a CUDA model __fastfails this process
+            # on the first transcribe (#1371) — take the CPU path instead.
+            from core.cudnn8 import ctranslate2_cudnn_status
+            cudnn_ok, cudnn_detail = ctranslate2_cudnn_status()
+            if not cudnn_ok:
+                print(f"asr-sidecar: {cudnn_detail} — using cpu", file=sys.stderr, flush=True)
+                device = "cpu"
         # Degrade fp16 → int8 rather than crash on GPUs without efficient fp16
         # (older Maxwell/Pascal, GTX 16xx, CTranslate2/cuDNN mismatch) (#551).
         last_err = None

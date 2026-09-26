@@ -2915,7 +2915,13 @@ def _ctranslate2_cuda_ok() -> bool:
         # the #1529 crash. CPU always works.
         logger.warning("device probe failed — CTranslate2 taking the CPU path", exc_info=True)
         return False
-    return _cuda_reported_available() and not _rocm_torch()
+    if not _cuda_reported_available() or _rocm_torch():
+        return False
+    # A CUDA model without loadable cuDNN 8 __fastfails the whole process
+    # (#1371). The availability gate only guards auto-detect; a *pinned*
+    # engine (asr_backend pref / OMNIVOICE_ASR_BACKEND) never consults it, so
+    # every CT2 loader must refuse CUDA here too — CPU is slower but alive.
+    return _ctranslate2_cudnn_ok()[0]
 
 
 def _auto_detect() -> str:
