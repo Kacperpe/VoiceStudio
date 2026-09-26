@@ -10,6 +10,7 @@ metadata and the backend fallback mirror it. Archived Tauri manifests stay froze
 
 **Highlights**
 
+- Transcribe shows how far a file has got and Cancel really stops it (#4)
 - Twilio setup is a guided checklist with live status and exact commands (#2304)
 - Integration pages use the full window, with a side panel on wide screens (#2304)
 - A call agent and Calls workspace that phone someone in your own voice to get a task done (#2306, #2305)
@@ -19,6 +20,7 @@ metadata and the backend fallback mirror it. Archived Tauri manifests stay froze
 
 ### Added
 
+- Transcribe shows a percentage and progress bar while a file is transcribed, and Cancel or closing the window stops the transcription instead of letting it run on (#4)
 - Call agent backend: place or answer phone calls that hold a task conversation in your verified or designed voice, with an editable AI disclosure, take-over and an after-call summary (#2306)
 - Calls workspace with a live transcript, take-over, hang-up and an after-call summary (#2305)
 
@@ -31,11 +33,13 @@ metadata and the backend fallback mirror it. Archived Tauri manifests stay froze
 
 ### Docs
 
+- The faster-whisper and troubleshooting guides explain that whole-file transcription times out only when it stops making progress (#4)
 - New call agent guide covering setup, disclosure, recording consent and safeguards (#2306)
 - The Twilio guide and integration directory describe the guided setup and in-app integration pages (#2304)
 
 ### Fixed
 
+- Long recordings transcribe to the end with faster-whisper instead of being abandoned after five minutes while still in progress (#4)
 - Integration pages show each integration's own category and summary instead of borrowed labels such as "Dubbing" for Twilio (#2304)
 - Integration and featured logos open their page in VoiceStudio; the vendor website opens only from the page's Website card (#2304)
 - Pickers show readable labels instead of raw values such as `__default__`, `auto` or language codes before they are opened (#2304)
