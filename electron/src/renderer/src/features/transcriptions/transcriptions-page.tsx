@@ -36,6 +36,7 @@ import { toast } from 'sonner';
 import { runRendererTask } from '@/lib/global-error-recovery';
 import { Button, buttonVariants } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
+import { Progress } from '@/components/ui/progress';
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group';
 import { WaveformPlayer } from '@/components/waveform-player';
 import { useRecording } from '@/hooks/use-recording';
@@ -61,6 +62,7 @@ import { saveLocalFile } from '@/lib/local-export';
 import { formatShortcut } from '../../../../../../frontend/src/utils/dictationShortcut';
 
 type TranscriptionMode = 'fast' | 'accurate';
+const PROGRESS_POLL_MS = 1000;
 const TRANSCRIPTION_MODE_KEY = 'voicestudio.transcription.mode';
 
 function initialTranscriptionMode(): TranscriptionMode {
@@ -85,6 +87,9 @@ export function TranscriptionsPage() {
   const [url, setUrl] = useState<string | null>(null);
   const [mode, setMode] = useState<TranscriptionMode>(initialTranscriptionMode);
   const [busy, setBusy] = useState(false);
+  // 0..1 while the engine reports how far it got; null when it does not.
+  const [progress, setProgress] = useState<number | null>(null);
+  const requestId = useRef<string | null>(null);
   const [failed, setFailed] = useState<string | null>(null);
   const [confirmClear, setConfirmClear] = useState(false);
   const request = useRef<AbortController | null>(null);
@@ -131,6 +136,18 @@ export function TranscriptionsPage() {
     setFailed(null);
     setFile(audio);
     const finishActivity = beginAppActivity(mode === 'accurate' ? 'transcription' : 'dictation');
+    const id = crypto.randomUUID();
+    requestId.current = id;
+    setProgress(null);
+    const poll = window.setInterval(() => {
+      apiJson<{ active: boolean; progress: number | null }>(`/transcribe/progress/${id}`)
+        .then((state) => {
+          if (state.active && requestId.current === id) setProgress(state.progress);
+        })
+        .catch(() => {
+          // Progress is a nicety; the transcription result still arrives.
+        });
+    }, PROGRESS_POLL_MS);
     try {
       const ready = await apiJson<{ ready: boolean }>(
         mode === 'accurate' ? '/dictation/readiness?purpose=transcribe' : '/dictation/readiness',
@@ -144,6 +161,7 @@ export function TranscriptionsPage() {
       const body = new FormData();
       body.set('audio', audio);
       body.set('mode', mode);
+      body.set('request_id', id);
       const refinement = await apiJson<{ auto: boolean }>('/api/settings/dictation-refinement', {
         signal: controller.signal,
       }).catch(() => ({ auto: false }));
@@ -165,7 +183,12 @@ export function TranscriptionsPage() {
       );
       if (!controller.signal.aborted) setFailed(describeError(error));
     } finally {
+      window.clearInterval(poll);
       finishActivity();
+      if (requestId.current === id) {
+        requestId.current = null;
+        setProgress(null);
+      }
       if (request.current === controller) {
         request.current = null;
         setBusy(false);
@@ -485,12 +508,21 @@ export function TranscriptionsPage() {
                   )}
                   {busy && (
                     <>
-                      <span role="status" className="text-sm text-muted-foreground">
+                      <span role="status" className="text-sm text-muted-foreground tabular-nums">
                         {t('referenceAsr.busy')}
+                        {progress !== null ? ` ${Math.round(progress * 100)}%` : null}
                       </span>
                       <Button
                         variant="ghost"
                         onClick={() => {
+                          // Aborting alone is also noticed as a disconnect, but
+                          // asking explicitly frees the GPU without waiting for it.
+                          const id = requestId.current;
+                          if (id) {
+                            void apiJson(`/transcribe/cancel/${id}`, { method: 'POST' }).catch(
+                              () => undefined,
+                            );
+                          }
                           request.current?.abort();
                         }}
                       >
@@ -501,6 +533,13 @@ export function TranscriptionsPage() {
                 </>
               )}
             </div>
+            {busy && progress !== null && (
+              <Progress
+                value={Math.round(progress * 100)}
+                aria-label={t('referenceAsr.busy')}
+                className="mx-auto mt-2 w-full max-w-4xl"
+              />
+            )}
           </div>
           {mode === 'fast' && !dictationReadiness.data?.ready && !dictationReadiness.isPending && (
             <DictationSetup onReady={() => void dictationReadiness.refetch()} />

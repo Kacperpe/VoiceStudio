@@ -16,16 +16,65 @@ the next healthy engine when the selected one has a broken deep import chain
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
+import re
 import tempfile
 import time
 
-from fastapi import APIRouter, File, Form, HTTPException, UploadFile
+from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
 from typing import Optional
 
 router = APIRouter()
 logger = logging.getLogger("omnivoice.capture")
+
+# In-flight file transcriptions a client asked to follow, keyed by the
+# client-chosen ``request_id``. Entries live only while the request runs.
+_ACTIVE_TRANSCRIPTIONS: dict = {}
+_REQUEST_ID = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
+# How often a running transcription checks whether its client went away.
+_DISCONNECT_POLL_S = 1.0
+
+
+def _valid_request_id(value) -> Optional[str]:
+    return value if isinstance(value, str) and _REQUEST_ID.match(value) else None
+
+
+async def _cancel_on_disconnect(request: Request, cancellation) -> None:
+    """Cancel the job once its client disconnects (closed tab, reload, abort).
+
+    Nothing else notices: the response has not started, so the server would
+    otherwise decode the whole file for a caller that can no longer read it.
+    """
+    while not cancellation.cancelled.is_set():
+        if await request.is_disconnected():
+            logger.info("Transcription client disconnected — cancelling")
+            cancellation.cancel()
+            return
+        await asyncio.sleep(_DISCONNECT_POLL_S)
+
+
+@router.get("/transcribe/progress/{request_id}")
+async def transcribe_progress(request_id: str):
+    """Progress of a running ``/transcribe`` call started with ``request_id``.
+
+    ``progress`` is a 0..1 fraction, or null when the engine does not report
+    progress; ``active`` is false once the call has finished or never existed.
+    """
+    cancellation = _ACTIVE_TRANSCRIPTIONS.get(request_id)
+    if cancellation is None:
+        return {"active": False, "progress": None}
+    return {"active": True, "progress": cancellation.progress}
+
+
+@router.post("/transcribe/cancel/{request_id}")
+async def cancel_transcription(request_id: str):
+    """Stop a running ``/transcribe`` call at the engine's next checkpoint."""
+    cancellation = _ACTIVE_TRANSCRIPTIONS.get(request_id)
+    if cancellation is not None:
+        cancellation.cancel()
+    return {"cancelled": cancellation is not None}
 
 
 def _timing(value):
@@ -52,6 +101,10 @@ async def transcribe_audio(
     model: Optional[str] = Form(None),
     mode: Optional[str] = Form(None),
     refine: Optional[str] = Form(None),
+    request_id: Optional[str] = Form(None),
+    # Optional so in-process callers can still invoke the route directly;
+    # FastAPI injects it for HTTP requests.
+    request: Request = None,  # type: ignore[assignment]
 ):
     """Transcribe an audio file to text.
 
@@ -70,6 +123,9 @@ async def transcribe_audio(
               through when no LLM backend is configured. The raw ``text``
               is always returned; ``refined_text`` is added only when the
               LLM actually changed something.
+        request_id: Optional client-chosen id (``[A-Za-z0-9_-]{1,64}``) that
+              ``GET /transcribe/progress/{id}`` and
+              ``POST /transcribe/cancel/{id}`` accept while this call runs.
 
     Returns:
         {
@@ -82,7 +138,6 @@ async def transcribe_audio(
             "engine": "mlx-whisper"
         }
     """
-    import asyncio
 
     # Save upload to a temp file (all backends need a file path)
     ext = os.path.splitext(audio.filename or "audio.wav")[1] or ".wav"
@@ -147,11 +202,28 @@ async def transcribe_audio(
             ASRTimeoutError,
             run_transcribe_guarded,
         )
+        from services.inference_cancellation import (
+            InferenceCancellation,
+            TranscriptionCancelledError,
+        )
+
         t0 = time.perf_counter()
+        cancellation = InferenceCancellation()
+        tracked_id = _valid_request_id(request_id)
+        if tracked_id:
+            _ACTIVE_TRANSCRIPTIONS[tracked_id] = cancellation
+        watcher = (
+            asyncio.create_task(_cancel_on_disconnect(request, cancellation))
+            if request is not None
+            else None
+        )
         try:
             result, engine_id, sherpa_model_id = await run_transcribe_guarded(
-                _gpu_pool, _run, what="Dictation",
+                _gpu_pool, _run, what="Dictation", cancellation=cancellation,
             )
+        except TranscriptionCancelledError:
+            logger.info("Capture transcription cancelled by the client")
+            raise HTTPException(status_code=499, detail="Transcription was cancelled.")
         except ASRTimeoutError as e:
             # Backend is alive — ASR couldn't finish. 504 with guidance, not a
             # silent hang the UI reads as "can't reach the local backend".
@@ -173,6 +245,11 @@ async def transcribe_audio(
             from services.ffmpeg_utils import raise_for_audio_extract_failure
             await asyncio.to_thread(raise_for_audio_extract_failure, str(e), tmp.name)
             raise
+        finally:
+            if watcher is not None:
+                watcher.cancel()
+            if tracked_id and _ACTIVE_TRANSCRIPTIONS.get(tracked_id) is cancellation:
+                del _ACTIVE_TRANSCRIPTIONS[tracked_id]
 
         # Some sherpa-onnx NeMo-TDT builds load successfully but decode an
         # entire spoken clip to no tokens. Live dictation already recovers

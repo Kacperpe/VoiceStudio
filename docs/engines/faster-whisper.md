@@ -67,6 +67,10 @@ transcription.
   ([#730](https://github.com/debpalash/VoiceStudio/issues/730)).
 - Transcribes are time-bounded: `OMNIVOICE_TRANSCRIBE_CHUNK_TIMEOUT_S`
   (default 120 s per dub chunk) and `OMNIVOICE_ASR_TRANSCRIBE_TIMEOUT_S`
-  (default 300 s whole-file).
+  (default 300 s whole-file). faster-whisper reports progress after each
+  segment, and the whole-file bound counts from the last progress, so a long
+  recording that keeps decoding is never cut off; a stalled one still is.
+- Transcribe shows that progress as a percentage, and **Cancel** (or closing
+  the window) stops the transcription at the next segment.
 
 Speed comparisons across engines live in [performance](../performance.md).

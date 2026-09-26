@@ -146,14 +146,46 @@ def _isolated_engine_hint(streak: int) -> str:
     )
 
 
+async def _await_until_idle(fut, cancellation, timeout: float):
+    """Await ``fut`` until it finishes or ``timeout`` passes with no activity.
+
+    Raises :class:`asyncio.TimeoutError` like ``wait_for``. The future is
+    shielded so a timeout leaves the caller able to tell a queued job from a
+    native thread that is still running.
+    """
+    while True:
+        remaining = timeout - (time.monotonic() - cancellation.last_activity)
+        if remaining <= 0:
+            raise asyncio.TimeoutError
+        try:
+            return await asyncio.wait_for(asyncio.shield(fut), timeout=remaining)
+        except asyncio.TimeoutError:
+            # Progress arrived while we waited: the deadline moved, keep going.
+            continue
+
+
 async def run_transcribe_guarded(executor, fn, *, what: str = "ASR",
                                  timeout: float = ASR_TRANSCRIBE_TIMEOUT_S,
                                  timeout_env: str = "OMNIVOICE_ASR_TRANSCRIBE_TIMEOUT_S",
                                  reset_on_timeout: bool = False,
-                                 on_abandon=None):
-    """Run a blocking transcribe ``fn`` in ``executor`` with a hard wall-clock
-    bound. On timeout, raise :class:`ASRTimeoutError` with guidance instead of
-    letting the request hang forever.
+                                 on_abandon=None,
+                                 cancellation=None):
+    """Run a blocking transcribe ``fn`` in ``executor`` with a hard bound on
+    *inactivity*. On timeout, raise :class:`ASRTimeoutError` with guidance
+    instead of letting the request hang forever.
+
+    The bound is measured from the job's last sign of life: its start, then
+    every progress report an engine makes through
+    :func:`services.inference_cancellation.report_progress`. An engine that
+    reports (faster-whisper, per segment) can therefore transcribe a file of
+    any length while a genuinely stuck one still times out after ``timeout``;
+    an engine that never reports keeps the plain wall-clock bound. A fixed
+    wall-clock cap used to abandon every recording longer than a few minutes
+    while it was still making steady progress.
+
+    ``cancellation`` lets the caller keep the job's
+    :class:`~services.inference_cancellation.InferenceCancellation` to read its
+    progress or cancel it; one is created when omitted.
 
     A future cannot cancel the underlying thread, so a timed-out
     in-process CTranslate2/whisperx call still owns its model and device. The
@@ -168,7 +200,8 @@ async def run_transcribe_guarded(executor, fn, *, what: str = "ASR",
     completion leaves cleanup with the caller.
     """
     from services.inference_cancellation import InferenceCancellation
-    cancellation = InferenceCancellation()
+    if cancellation is None:
+        cancellation = InferenceCancellation()
     loop = asyncio.get_running_loop()
     # Same SystemExit containment as the TTS pool (#1133 class): an ASR
     # dependency written as a CLI must not be able to shut the backend down.
@@ -219,7 +252,7 @@ async def run_transcribe_guarded(executor, fn, *, what: str = "ASR",
     try:
         # Shield the wrapper so timeout does not discard our ability to tell a
         # queued cancellation from a native thread that is still running.
-        result = await asyncio.wait_for(asyncio.shield(fut), timeout=timeout)
+        result = await _await_until_idle(fut, cancellation, timeout)
     except asyncio.CancelledError:
         _abandon()
         raise
@@ -229,7 +262,7 @@ async def run_transcribe_guarded(executor, fn, *, what: str = "ASR",
             reset_pool_after_wedge(executor, what=what)
         streak = _note_transcribe_timeout()
         msg = (
-            f"{what} transcription exceeded {timeout:.0f}s and was abandoned — "
+            f"{what} transcription made no progress for {timeout:.0f}s and was abandoned — "
             "the backend is running, but the ASR model is too heavy for the "
             "available compute. Most often the GPU is VRAM-starved: the resident "
             "TTS model and a large ASR model (large-v3) contend for memory. "
@@ -1222,7 +1255,19 @@ class FasterWhisperBackend(ASRBackend):
             **asr_decode_defaults(),
             **whisper_request_options(language, initial_prompt, temperature, task),
         )
-        segments = list(segments_iter)
+        # Decoding happens lazily as the generator is consumed, one segment at
+        # a time — the only point where a whole-file transcribe can report how
+        # far it got and stop early when its request was cancelled.
+        from services.inference_cancellation import raise_if_cancelled, report_progress
+
+        total = float(getattr(info, "duration", 0) or 0)
+        segments = []
+        raise_if_cancelled()
+        for seg in segments_iter:
+            segments.append(seg)
+            if total > 0:
+                report_progress(seg.end / total)
+            raise_if_cancelled()
         # Normalise to the shape segment_transcript(...) expects: a dict with
         # `chunks` (for backwards compat with mlx output) AND `segments` +
         # `language` (so callers that peek at language metadata keep working).
