@@ -2,6 +2,8 @@ import { SecondarySidebar } from '@/components/workspace-sidebar';
 import { WorkspaceHeader } from '@/components/app-shell/workspace-header';
 import { LiveDictation } from './live-dictation';
 import { DictationSetup } from './dictation-setup';
+import { MediaDropZone } from './media-drop-zone';
+import { TRANSCRIBE_ACCEPT } from './transcribable-media';
 import {
   segTimeRange,
   formatTranscriptExport,
@@ -175,6 +177,14 @@ export function TranscriptionsPage() {
   const recording = useRecording((audio) => void transcribe(audio));
   const capturing =
     liveBusy || recording.isStarting || recording.isRecording || recording.isCleaning;
+  const canUpload = !busy && !capturing && Boolean(fileReadiness.data?.ready);
+  const dropZone = (
+    <MediaDropZone
+      disabled={!canUpload}
+      onBrowse={() => input.current?.click()}
+      onFile={(media) => void transcribe(media)}
+    />
+  );
   useEffect(() => {
     const unsubscribe = subscribeTranscriptions(setEntries);
     return () => {
@@ -404,7 +414,7 @@ export function TranscriptionsPage() {
               <input
                 ref={input}
                 type="file"
-                accept="audio/*,.wav,.mp3,.m4a,.flac,.ogg,.webm"
+                accept={TRANSCRIBE_ACCEPT}
                 className="hidden"
                 onChange={(event) => {
                   const audio = event.target.files?.[0];
@@ -501,6 +511,9 @@ export function TranscriptionsPage() {
                 </>
               )}
             </div>
+            {selected || search ? (
+              <div className="mx-auto mt-2 w-full max-w-4xl">{dropZone}</div>
+            ) : null}
           </div>
           {mode === 'fast' && !dictationReadiness.data?.ready && !dictationReadiness.isPending && (
             <DictationSetup onReady={() => void dictationReadiness.refetch()} />
@@ -796,6 +809,7 @@ export function TranscriptionsPage() {
                       <MicIcon />
                       {t('clone.record')}
                     </Button>
+                    <div className="mt-2 w-full">{dropZone}</div>
                   </div>
                 ) : null}
               </div>
