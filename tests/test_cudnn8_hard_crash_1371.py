@@ -210,6 +210,56 @@ def test_the_asr_sidecar_preloads_cudnn8(monkeypatch, ab, cudnn8):
     assert called, "the sidecar did not preload cuDNN 8 on startup"
 
 
+@pytest.fixture
+def cuda_host(monkeypatch, ab):
+    """A real NVIDIA CUDA host, no device override — CT2 would pick cuda."""
+    device_caps = importlib.import_module("core.device_caps")
+    monkeypatch.setattr(device_caps, "detect_host_caps", lambda: type("Caps", (), {"family": "cuda"})())
+    monkeypatch.setattr(ab, "_cuda_reported_available", lambda: True)
+    monkeypatch.setattr(ab, "_rocm_torch", lambda: False)
+
+
+def test_a_pinned_ct2_engine_takes_cpu_without_cudnn8(ab, cuda_host, cudnn8_missing):
+    """Pinning faster-whisper (the asr_backend pref) skips the availability gate,
+    so the device pick itself must refuse CUDA — otherwise the first transcribe
+    __fastfails the backend with 0xC0000409 exactly as #1371 did."""
+    assert ab._ctranslate2_cuda_ok() is False
+
+
+def test_cuda_is_kept_when_cudnn8_loads(monkeypatch, ab, cudnn8, cuda_host):
+    monkeypatch.setattr(cudnn8, "_preloaded", True)
+    monkeypatch.setattr(cudnn8, "_torch_wants_cudnn8", lambda: _CUDA_PRESENT)
+    monkeypatch.setattr(cudnn8, "_try_load", lambda name: None)
+    assert ab._ctranslate2_cuda_ok() is True
+
+
+def test_the_asr_sidecar_takes_cpu_without_cudnn8(monkeypatch, ab, cuda_host, cudnn8_missing):
+    path = (
+        pytest.importorskip("pathlib").Path(ab.__file__).resolve().parents[1]
+        / "engines" / "_asr_sidecar" / "main.py"
+    )
+    spec = importlib.util.spec_from_file_location("_sidecar_device_under_test", path)
+    module = importlib.util.module_from_spec(spec)
+    saved = list(sys.path)
+    try:
+        spec.loader.exec_module(module)
+    finally:
+        sys.path[:] = saved
+    devices = []
+
+    class _Model:
+        def __init__(self, name, device, compute_type):
+            devices.append(device)
+
+    fake = type(sys)("faster_whisper")
+    fake.WhisperModel = _Model
+    monkeypatch.setitem(sys.modules, "faster_whisper", fake)
+    execstack = importlib.import_module("core.execstack")
+    monkeypatch.setattr(execstack, "ensure_ctranslate2_loadable", lambda: (True, "ok"))
+    module._get_model()
+    assert devices == ["cpu"]
+
+
 def test_the_windows_dll_directory_handle_is_retained(monkeypatch, tmp_path, cudnn8):
     """`os.add_dll_directory` returns a context-manager cookie whose close (or
     garbage collection) UN-registers the directory again.

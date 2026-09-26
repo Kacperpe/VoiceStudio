@@ -16,11 +16,13 @@ metadata and the backend fallback mirror it. Archived Tauri manifests stay froze
 - Footer integration logos open their in-app page (#2302)
 - Record or drop a voice sample from one view in Voice Clone (#2307)
 - Videos without sound get a clear message instead of an ffmpeg error dump (#2308)
+- Drag audio or video onto Transcribe to transcribe it (#3)
 
 ### Added
 
 - Call agent backend: place or answer phone calls that hold a task conversation in your verified or designed voice, with an editable AI disclosure, take-over and an after-call summary (#2306)
 - Calls workspace with a live transcript, take-over, hang-up and an after-call summary (#2305)
+- Transcribe has a drop zone for audio and video files, and the file picker accepts video recordings such as MP4, MKV and MOV (#3)
 
 ### Changed
 
@@ -41,6 +43,7 @@ metadata and the backend fallback mirror it. Archived Tauri manifests stay froze
 - Pickers show readable labels instead of raw values such as `__default__`, `auto` or language codes before they are opened (#2304)
 - Resuming an audiobook larger than the render cache no longer re-renders its first chapters; the cache is trimmed after a job and never drops chapters a job is using (#2318)
 - Audiobooks with loudness normalization come out at 48 kHz instead of 96 kHz, so they sound right in phone audiobook apps (#2)
+- Transcribing with faster-whisper or WhisperX chosen in Settings no longer crashes the engine when cuDNN 8 is missing; it runs on the CPU instead (#3)
 
 ### Fixed
 
