@@ -702,7 +702,9 @@ the bounds with `OMNIVOICE_ASR_TRANSCRIBE_TIMEOUT_S` (whole-file transcription)
 and `OMNIVOICE_GENERATE_TIMEOUT_S` (generation) — both in seconds, default 300
 — and `OMNIVOICE_TRANSCRIBE_CHUNK_TIMEOUT_S` (per-chunk dub transcription,
 default 120). **Raise** them for very long single files/generations, **lower**
-them to fail faster on a small machine.
+them to fail faster on a small machine. Whole-file transcription with
+faster-whisper counts its bound from the last progress update rather than from
+the start, so long recordings finish without raising it.
 
 CPU-only hosts use a bounded 600-second generation floor because correct CPU
 synthesis can take longer than the accelerated five-minute budget. Override it
