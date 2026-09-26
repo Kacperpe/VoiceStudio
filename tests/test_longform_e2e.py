@@ -14,6 +14,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import re
 import shutil
 import subprocess
 
@@ -406,3 +407,18 @@ def test_done_summary_from_old_manifest_is_strict_json(tmp_path, monkeypatch):
                              opts=ExpressiveOptions(emo_vector=(float("nan"),) * 8))
     assert events[-1]["type"] == "done"
     json.dumps(events[-1], allow_nan=False)
+
+
+@pytest.mark.parametrize("fmt", ["m4b", "mp3"])
+def test_mastered_output_is_48k_not_loudnorm_rate(tmp_path, monkeypatch, fmt):
+    """loudnorm upsamples to 192 kHz; the encoder then kept 96 kHz, a rate that
+    wastes the bitrate on inaudible bands and plays poorly in phone audiobook
+    apps. A mastered book must come out at a standard 48 kHz."""
+    out = tmp_path / "outputs"
+    out.mkdir()
+    events = _collect_events(_plan(("One", "hi")), monkeypatch, out, fmt=fmt, loudness="podcast")
+    done = events[-1]
+    assert done["type"] == "done"
+    probe = subprocess.run([find_ffmpeg(), "-hide_banner", "-i", str(out / done["output"])],
+                           capture_output=True, text=True, errors="replace").stderr
+    assert re.search(r"Audio: .*\b48000 Hz", probe), probe

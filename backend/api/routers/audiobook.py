@@ -26,6 +26,7 @@ import logging
 import os
 import re
 import shutil
+import time
 import uuid
 
 from collections.abc import Awaitable, Callable
@@ -49,11 +50,18 @@ from services.longform_render import (
     build_concat_list,
     build_ffmetadata,
     build_render_cmd,
+    mark_cache_used,
     prune_cache_dir,
 )
 from services import longform_resume  # pure (no torch) — durable resume manifest
 
 logger = logging.getLogger("omnivoice.audiobook")
+
+#: Start time of every longform render still in flight, by job id. A job's
+#: end-of-run cache prune spares everything touched since the OLDEST of these,
+#: so one job finishing can never evict the chapters another is still going to
+#: mux.
+_live_render_starts: dict[str, float] = {}
 router = APIRouter()
 
 # A cover filename as produced by /audiobook/cover: 12 hex chars + image ext.
@@ -831,6 +839,7 @@ def _render_chapter_cached(chapter, synth, sr, engine_id, resolve, cache_dir, le
             continue  # corrupt cache entry — try the next, else re-render
         if candidate != wav_path:
             candidate = adopt_cached_file(candidate, wav_path)
+        mark_cache_used(candidate)
         if not has_chapter_inputs(cache_dir, content_id):
             record_chapter_inputs(cache_dir, content_id, inputs)
         return candidate, dur, True, None
@@ -916,6 +925,8 @@ def _remote_chapter_call(chapter, *, engine_id, default_voice, voice_map,
             if legacy_path != wav_path and os.path.exists(legacy_path):
                 wav_path = adopt_cached_file(legacy_path, wav_path)
                 break
+    if os.path.exists(wav_path):
+        mark_cache_used(wav_path)
     # The worker synthesizes from ``spans``, but the gateway and scheduler read
     # top-level ``text`` to scale the remote execution deadline. Add this after
     # the signature so existing content-addressed remote cache keys still hit.
@@ -1142,7 +1153,11 @@ async def _render_longform_sse(
     # front doors: an identical chapter renders once.
     cache_dir = os.path.join(OUTPUTS_DIR, LONGFORM_CACHE_SUBDIR)
     os.makedirs(cache_dir, exist_ok=True)
-    prune_cache_dir(cache_dir)  # bound disk before this job adds its chapters
+    # The cap is enforced after the job, sparing every file it wrote or reused.
+    # Pruning up front evicted a resumed book's own oldest chapters whenever the
+    # book outgrew the cap, so resume re-rendered them.
+    job_token = uuid.uuid4().hex
+    _live_render_starts[job_token] = time.time()
     try:
         resolved_lang = _resolve_default_language(language, default_voice)
         operation = "audiobook" if job_type == "audiobook" else "longform"
@@ -1358,6 +1373,11 @@ async def _render_longform_sse(
                 pass  # best-effort job history
         # Generic message only — don't leak the stack/exception text to the client.
         yield _emit({"type": "error", "error": "render failed (see backend log)"})
+    finally:
+        # Also on interruption: the chapters stay cached for the resume.
+        job_started = _live_render_starts.pop(job_token)
+        prune_cache_dir(cache_dir, keep_since=min(
+            [job_started, *_live_render_starts.values()]))
 
 
 async def _public_longform_stream(plan, **render_kwargs):

@@ -43,9 +43,16 @@ from typing import Iterable, Optional
 
 _BITRATE_RE = re.compile(r"^\d{2,3}k$")
 #: Default ceiling for the content-addressed chapter cache. Above this, the
-#: oldest cached chapter WAVs are evicted (LRU by mtime). Override via
+#: least recently used WAVs are evicted after a job, never the ones that job
+#: wrote or reused (see ``prune_cache_dir``). Override via
 #: OMNIVOICE_LONGFORM_CACHE_MAX_GB.
 _CACHE_MAX_BYTES = int(float(os.environ.get("OMNIVOICE_LONGFORM_CACHE_MAX_GB", "2")) * 1024 ** 3)
+#: Output sample rate whenever loudnorm runs. loudnorm resamples to 192 kHz
+#: internally and emits that rate; without an explicit ``-ar`` the AAC encoder
+#: kept the highest rate it supports (96 kHz), which spends the bitrate on
+#: inaudible bands and plays badly on phone audiobook apps. 48 kHz is the
+#: rate every AAC/MP3 decoder handles.
+LOUDNORM_OUTPUT_RATE = 48000
 _COVER_EXTS = {".jpg", ".jpeg", ".png"}
 _COVER_MAX_BYTES = 8 * 1024 * 1024  # 8 MB — a book cover, not a payload
 
@@ -69,7 +76,32 @@ def _escape_meta(value: str) -> str:
     return re.sub(r"([=;#\\\n])", r"\\\1", value or "")
 
 
-def prune_cache_dir(cache_dir: str, max_bytes: int = _CACHE_MAX_BYTES) -> tuple[int, int]:
+#: Slack under a job's start time when deciding which cache files it used, so
+#: a filesystem with coarse mtimes (FAT/exFAT round to 2 s) cannot date a file
+#: the job just wrote to before the job began.
+_MTIME_SLACK_S = 2.0
+
+
+def mark_cache_used(path: str) -> None:
+    """Bump a cache hit's mtime so eviction sees it as recently used.
+
+    Every cache layer must call this on a hit: :func:`prune_cache_dir` keeps
+    the files a job touched by comparing mtimes to the job's start, so a hit
+    that is not marked is an eviction candidate at the end of the very job
+    that reused it (a resumed book losing its early chapters). Best-effort.
+    """
+    try:
+        os.utime(path, None)
+    except OSError:
+        pass
+
+
+def prune_cache_dir(
+    cache_dir: str,
+    max_bytes: int = _CACHE_MAX_BYTES,
+    *,
+    keep_since: Optional[float] = None,
+) -> tuple[int, int]:
     """Evict the oldest files in ``cache_dir`` until the total size is within
     ``max_bytes`` (LRU by mtime). The content-addressed render cache otherwise
     grows without bound — uncompressed WAVs accumulate across every render.
@@ -77,8 +109,14 @@ def prune_cache_dir(cache_dir: str, max_bytes: int = _CACHE_MAX_BYTES) -> tuple[
     Walks the whole tree, so chapter WAVs at the root and segment WAVs under
     ``segments/`` share ONE byte budget — the cap holds no matter which layer
     grew. Best-effort: returns ``(remaining_bytes, removed_count)`` and never
-    raises (a missing dir / unstattable file is just skipped). Call it *before*
-    writing a job's files so the fresh ones are never the eviction target.
+    raises (a missing dir / unstattable file is just skipped).
+
+    ``keep_since`` (a ``time.time()`` value) protects every file modified at or
+    after it: pass the job's start time and prune *after* the job, so neither
+    the chapters it wrote nor the older ones it reused (hits are marked via
+    :func:`mark_cache_used`) can be evicted — a book bigger than the cap then
+    stays whole instead of re-rendering its oldest chapters on resume. The cap
+    is exceeded until a later job's prune, never enforced against live work.
     """
     entries: list[tuple[float, int, str]] = []
     total = 0
@@ -97,10 +135,13 @@ def prune_cache_dir(cache_dir: str, max_bytes: int = _CACHE_MAX_BYTES) -> tuple[
     if total <= max_bytes:
         return (total, 0)
     entries.sort()  # oldest first
+    keep_after = None if keep_since is None else keep_since - _MTIME_SLACK_S
     removed = 0
-    for _mtime, size, p in entries:
+    for mtime, size, p in entries:
         if total <= max_bytes:
             break
+        if keep_after is not None and mtime >= keep_after:
+            break  # sorted: this and every later file belong to the live job
         try:
             os.remove(p)
             total -= size
@@ -471,10 +512,7 @@ class SegmentCache:
         if int(sr) != self.sample_rate or audio.numel() == 0:
             self.misses += 1
             return None  # foreign-rate/empty entry — clean miss, re-render
-        try:
-            os.utime(path, None)
-        except OSError:
-            pass
+        mark_cache_used(path)
         self.hits += 1
         return audio
 
@@ -731,7 +769,7 @@ def build_render_cmd(
     # gives an off-render no -af (byte-identical to today).
     filt = build_loudnorm_apply_filter(loudness, measured) if measured is not None else build_loudnorm_filter(loudness)
     if filt:
-        cmd += ["-af", filt]
+        cmd += ["-af", filt, "-ar", str(LOUDNORM_OUTPUT_RATE)]
 
     if is_mp3:
         cmd += ["-c:a", "libmp3lame", "-b:a", bitrate, "-f", "mp3", str(out_path)]
